@@ -1,0 +1,132 @@
+ from access360.api.model.payment.paymentModel import Invoice
+from fastapi import HTTPException, status
+
+import hashlib, warnings, json, base64
+from Cryptodome.Cipher import DES3
+from access360.settings import (PAYMENT_SECRET_KEY, PAYMENT_PUBLIC_KEY,
+PAYMENT_INIT_URL, PAYMENT_VALIDATE_URL, PAYMENT_VERIFY_URL)
+from httpx import AsyncClient
+
+
+  # secret key
+    sec_key = PAYMENT_SECRET_KEY
+    @staticmethod
+    def getKey(secret_key:str) ->str:
+        hashedSecretKey = hashlib.md5(secret_key.encode("utf-8")).hexdigest()
+        hashedSecretKeyLast12 = hashedSecretKey[-12:]
+        secretKeyAdjusted = secret_key.replace('FLWSECK-', '')
+        secretKeyAdjustedFirst12 = secretKeyAdjusted[:12]
+        return secretKeyAdjustedFirst12 + hashedSecretKeyLast12
+
+    """This is the encryption function that encrypts your payload by passing the text and your encryption Key."""
+    @staticmethod
+    def encryptData(key, plainText):
+        blockSize = 8
+        padDiff = blockSize - (len(plainText) % blockSize)
+        cipher = DES3.new(key, DES3.MODE_ECB)
+        plainText = "{}{}".format(plainText, "".join(chr(padDiff) * padDiff))
+        # cipher.encrypt - the C function that powers this doesn't accept plain string, rather it accepts byte strings, hence the need for the conversion below
+        text = plainText.encode('utf-8')
+        encrypted = base64.b64encode(cipher.encrypt(text)).decode("utf-8")
+        return encrypted
+
+    def getData(self):
+
+        data = {
+            "PBFPubKey": PAYMENT_PUBLIC_KEY,
+            "card_number": self.cardNo,
+            "cvv": self.cvv,
+            "expiry_month": self.expiryMonth,
+            "expiry_year": self.expiryYear,
+            "currency":self.currency.upper(),
+            "amount": self.amount,
+            "email":self.userEmail,
+            "tx_ref": self.paymentRef_str,
+            "secret_key": PAYMENT_SECRET_KEY
+        }
+        return data
+
+    def getPayLoad(self, mode:bool = False, data:dict = None):
+        hashed_sec_key = Access360Payment.getKey(Access360Payment.sec_key)
+        if mode and data:
+            data = self.getData()
+            newData = data.update(data)
+            encrypt_3DES_key = Access360Payment.encryptData(hashed_sec_key, json.dumps(newData))
+            payload = {
+                "PBFPubKey": PAYMENT_PUBLIC_KEY,
+                "client": encrypt_3DES_key,
+                "alg": "3DES-24"
+            }
+            return payload
+            # payment payload
+        encrypt_3DES_key = Access360Payment.encryptData(hashed_sec_key, json.dumps(self.getData()))
+        payload = {
+            "PBFPubKey": PAYMENT_PUBLIC_KEY,
+            "client": encrypt_3DES_key,
+            "alg": "3DES-24"
+        }
+        return payload
+
+
+    async def pay_via_card(self):
+        url = PAYMENT_INIT_URL
+        headers = {"Content-Type":"application/json", "Authorization":f"Bearer {PAYMENT_SECRET_KEY}"}
+        body = json.dumps(self.getPayLoad(Access360Payment.sec_key))
+
+        async  with AsyncClient() as client:
+            req = await client.post(url=url, headers=headers, data=body)
+            if req.json()["status"] == "error":
+                raise HTTPException(detail={"error":req.json()["message"], "status":req.json()["status"]}, status_code=status.HTTP_400_BAD_REQUEST)
+            # if req.status_code == "400":
+
+        #     try:
+        #
+        #         if req.json["status"] == "success":
+        #             return req.json()
+        #         return req.json()
+        #     except Exception as e:
+        #         return e
+
+    async def add_pin(self):
+        data = self.getPayLoad(mode=True, data={"authorization": {"mode": self.suggested_auth, "pin": self.cardPin}})
+        url = PAYMENT_VALIDATE_URL
+        headers = {"Content-Type": "application/json", "Authorization": f"Bearer {PAYMENT_SECRET_KEY}"}
+        try:
+            async  with AsyncClient() as client:
+                req = await client.post(url=url, headers=headers, data=data)
+            print(req.status_code)
+            print(req.json())
+            return req.json()
+        except Exception as e:
+            print(e)
+
+
+    @staticmethod
+    async def Validate_payment(otp:str,  paymentRef_key:str):
+        url = PAYMENT_VALIDATE_URL
+        headers = {"Content-Type":"application/json", "Authorization":f"Bearer {PAYMENT_SECRET_KEY}"}
+        data = {"otp":otp, "flw_ref":paymentRef_key, "type":"card"}
+        try:
+            async  with AsyncClient() as client:
+                req = await client.post(url=url, headers=headers, data=data)
+            print(req.status_code)
+            print(req.json())
+            return req.json()
+        except Exception as e:
+            print("error", e)
+
+
+
+    @staticmethod
+    async def verify_Payment(paymentId:int):
+        url = f'{PAYMENT_VERIFY_URL}/{paymentId}/verify'
+        headers = {"Content-Type":"application/json", "Authorization":f"Bearer {PAYMENT_SECRET_KEY}"}
+        try:
+            async with AsyncClient() as client:
+                req = await client.get(url=url, headers=headers)
+            print(req.status_code)
+            print(req.text)
+            print(req.json())
+            return req.json()
+        except Exception as e:
+            print("error ", e)
